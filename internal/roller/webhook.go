@@ -28,7 +28,7 @@ type harborEvent struct {
 }
 
 // Handler returns the HTTP surface: probes and the Harbor webhook.
-func (r *Roller) Handler() http.Handler {
+func (e *Engine) Handler() http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -37,30 +37,37 @@ func (r *Roller) Handler() http.Handler {
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
-	mux.HandleFunc("POST /hook", r.webhook)
+	mux.HandleFunc("POST /hook", e.webhook)
 
 	return mux
 }
 
-// relevant reports whether an event is a push to the tracked repository and tag.
-func (r *Roller) relevant(ev harborEvent) bool {
+// matching returns the targets a push event concerns: those watching the pushed repository whose
+// tag is among the pushed tags. A single event can fan out to several Deployments that share an
+// image, which is the whole point of running more than one target.
+func (e *Engine) matching(ev harborEvent) []*Roller {
 	if ev.Type != "PUSH_ARTIFACT" {
-		return false
+		return nil
 	}
-	if ev.EventData.Repository.RepoFullName != r.cfg.Repository {
-		return false
-	}
-	for _, res := range ev.EventData.Resources {
-		if res.Tag == r.cfg.Tag {
-			return true
+
+	var out []*Roller
+	for _, r := range e.rollers {
+		if r.target.Repository != ev.EventData.Repository.RepoFullName {
+			continue
+		}
+		for _, res := range ev.EventData.Resources {
+			if res.Tag == r.target.Tag {
+				out = append(out, r)
+				break
+			}
 		}
 	}
-	return false
+	return out
 }
 
-func (r *Roller) webhook(w http.ResponseWriter, req *http.Request) {
-	if secret := r.cfg.WebhookSecret; secret != "" {
-		got := req.Header.Get(r.cfg.WebhookHeader)
+func (e *Engine) webhook(w http.ResponseWriter, req *http.Request) {
+	if secret := e.cfg.WebhookSecret; secret != "" {
+		got := req.Header.Get(e.cfg.WebhookHeader)
 		if subtle.ConstantTimeCompare([]byte(got), []byte(secret)) != 1 {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
@@ -73,7 +80,8 @@ func (r *Roller) webhook(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	if !r.relevant(ev) {
+	matched := e.matching(ev)
+	if len(matched) == 0 {
 		// A push we do not track: acknowledge and move on.
 		w.WriteHeader(http.StatusOK)
 		return
@@ -82,24 +90,24 @@ func (r *Roller) webhook(w http.ResponseWriter, req *http.Request) {
 	// Harbor retries a webhook only three times with a 3s client timeout, so acknowledge now and
 	// do the work in the background. The poll loop is the safety net for anything missed.
 	w.WriteHeader(http.StatusAccepted)
-	go r.check(context.Background(), "webhook")
+	go e.check(context.Background(), "webhook", matched)
 }
 
 // Serve runs the poll loop and the webhook listener until ctx is cancelled.
-func (r *Roller) Serve(ctx context.Context) error {
+func (e *Engine) Serve(ctx context.Context) error {
 	srv := &http.Server{
-		Addr:              r.cfg.Listen,
-		Handler:           r.Handler(),
+		Addr:              e.cfg.Listen,
+		Handler:           e.Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
 	errCh := make(chan error, 1)
 	go func() {
-		r.log.Info("listening",
-			"addr", r.cfg.Listen,
-			"deployment", r.cfg.Target(),
-			"ref", r.cfg.Ref(),
-			"poll_interval", r.cfg.PollInterval.String(),
+		e.log.Info("listening",
+			"addr", e.cfg.Listen,
+			"targets", len(e.rollers),
+			"registry", e.cfg.Registry,
+			"poll_interval", e.cfg.PollInterval.String(),
 		)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
@@ -107,9 +115,9 @@ func (r *Roller) Serve(ctx context.Context) error {
 	}()
 
 	// Reconcile immediately at startup, so a restart catches anything missed while down.
-	r.check(ctx, "startup")
+	e.check(ctx, "startup", e.rollers)
 
-	ticker := time.NewTicker(r.cfg.PollInterval)
+	ticker := time.NewTicker(e.cfg.PollInterval)
 	defer ticker.Stop()
 
 	for {
@@ -121,7 +129,7 @@ func (r *Roller) Serve(ctx context.Context) error {
 		case err := <-errCh:
 			return err
 		case <-ticker.C:
-			r.check(ctx, "poll")
+			e.check(ctx, "poll", e.rollers)
 		}
 	}
 }

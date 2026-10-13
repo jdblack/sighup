@@ -62,11 +62,25 @@ Create the name of the service account to use
 {{- end }}
 
 {{/*
-The namespace holding the Deployment being rolled. Defaults to the release namespace, in which
-case nothing special happens; when it differs, only the Role and RoleBinding land over there.
+The value of SIGHUP_TARGETS: the targets list, with each target's namespace defaulted to the release
+namespace and required fields enforced. Emitted as JSON because the binary parses it as such -- one
+env var carrying a list, rather than N indexed vars.
 */}}
-{{- define "sighup.targetNamespace" -}}
-{{- .Values.target.namespace | default .Release.Namespace }}
+{{- define "sighup.targets" -}}
+{{- if not .Values.targets -}}
+{{- fail "targets is required: name at least one {repository,tag,deployment}" -}}
+{{- end -}}
+{{- $ns := .Release.Namespace -}}
+{{- $out := list -}}
+{{- range $i, $t := .Values.targets -}}
+{{- $out = append $out (dict
+      "repository" (required (printf "targets[%d].repository is required" $i) $t.repository)
+      "tag" (required (printf "targets[%d].tag is required" $i) $t.tag)
+      "namespace" (default $ns $t.namespace)
+      "deployment" (required (printf "targets[%d].deployment is required" $i) $t.deployment)
+      "annotation" $t.annotation) -}}
+{{- end -}}
+{{- toJson $out -}}
 {{- end }}
 
 {{/*

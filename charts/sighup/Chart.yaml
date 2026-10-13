@@ -6,9 +6,9 @@ version: 0.1.0
 # Manual: the Go binary carries no version string, so there is nothing for CI to guard this against.
 # Bump it by hand when the app changes.
 appVersion: "0.1.0"
-home: https://git.vn.linuxguru.net/jblack/sighup
+home: https://github.com/jdblack/sighup
 sources:
-  - https://git.vn.linuxguru.net/jblack/sighup
+  - https://github.com/jdblack/sighup
 keywords:
   - continuous-deployment
   - registry
@@ -16,7 +16,7 @@ keywords:
   - harbor
 maintainers:
   - name: James Blackwell
-    email: jblack@linuxguru.net
+    email: helm@linuxguru.net
 # httpGet probes, seccompProfile and a named targetPort are stock well before this; 1.25 is the
 # honest floor for a supported cluster.
 kubeVersion: ">=1.25.0-0"

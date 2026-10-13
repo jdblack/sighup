@@ -1,17 +1,18 @@
-// Command sighup rolls a Kubernetes Deployment whenever a container tag's digest moves in
-// the registry.
+// Command sighup rolls one or more Kubernetes Deployments whenever their container tags' digests
+// move in the registry.
 //
 // Two modes:
 //
 //	serve  receive Harbor webhooks AND poll on an interval (a resident Deployment)
-//	once   run a single check and exit (a CronJob)
+//	once   run a single check across every target and exit (a CronJob)
 //
 // The poll loop is not optional in `serve`: Harbor retries a failed webhook only three times with
-// a 3s client timeout, so a missed delivery would otherwise leave the Deployment stale forever.
+// a 3s client timeout, so a missed delivery would otherwise leave a Deployment stale forever.
 package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -54,7 +55,7 @@ func run() error {
 		return err
 	}
 
-	r, err := roller.New(cfg, log)
+	engine, err := roller.New(cfg, log)
 	if err != nil {
 		return err
 	}
@@ -64,22 +65,33 @@ func run() error {
 
 	switch mode {
 	case "once":
-		res, err := r.RunOnce(ctx)
-		if err != nil {
-			return err
+		return runOnce(ctx, engine, log)
+	case "serve":
+		return engine.Serve(ctx)
+	default:
+		return fmt.Errorf("unknown mode %q: want serve or once", mode)
+	}
+}
+
+// runOnce checks every target, logs each outcome, and fails if any target did.
+func runOnce(ctx context.Context, engine *roller.Engine, log *slog.Logger) error {
+	var errs []error
+
+	for _, res := range engine.RunOnce(ctx) {
+		if res.Err != nil {
+			log.Error("check failed", "target", res.Target, "error", res.Err)
+			errs = append(errs, fmt.Errorf("%s: %w", res.Target, res.Err))
+			continue
 		}
 		log.Info("check complete",
-			"deployment", res.Deployment,
+			"target", res.Target,
 			"tag", res.Tag,
 			"applied", res.Applied,
 			"digest", res.Digest,
 			"rolled", res.Rolled,
 			"reason", res.Reason,
 		)
-		return nil
-	case "serve":
-		return r.Serve(ctx)
-	default:
-		return fmt.Errorf("unknown mode %q: want serve or once", mode)
 	}
+
+	return errors.Join(errs...)
 }

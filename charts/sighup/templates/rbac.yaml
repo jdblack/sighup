@@ -1,26 +1,38 @@
 {{- if .Values.rbac.create -}}
 {{/*
-The whole security story, in one rule: one API group, one resource, ONE NAME, two verbs. There is
-no cluster-scoped object here and no wildcard, so the worst a compromised sighup can do is restart
-the Deployment it was pointed at.
+The scope story, in one rule per namespace: one API group, one resource, a NAMED list of Deployments,
+two verbs. No cluster-scoped object, no wildcard -- so the worst a compromised sighup can do is
+restart the Deployments this release names, and only those.
 
-The Role and RoleBinding live in the target namespace (which need not be the release namespace),
-while the ServiceAccount stays with the release; a cross-namespace subject is allowed.
+Namespaces differ, so the Roles do too: sighup groups its targets by namespace and lands one Role and
+RoleBinding in each. The ServiceAccount stays with the release; a cross-namespace subject is allowed,
+so a single identity is bound into every target namespace.
 */}}
+{{- $root := . -}}
+{{- $releaseNS := .Release.Namespace -}}
+{{- $groups := dict -}}
+{{- range .Values.targets -}}
+{{- $n := default $releaseNS .namespace -}}
+{{- $groups = set $groups $n (append (get $groups $n | default list) .deployment) -}}
+{{- end -}}
+{{- range $ns, $deps := $groups }}
+---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: {{ include "sighup.fullname" . }}
-  namespace: {{ include "sighup.targetNamespace" . }}
+  name: {{ include "sighup.fullname" $root }}
+  namespace: {{ $ns }}
   labels:
-    {{- include "sighup.labels" . | nindent 4 }}
+    {{- include "sighup.labels" $root | nindent 4 }}
 rules:
   - apiGroups:
       - apps
     resources:
       - deployments
     resourceNames:
-      - {{ required "target.deployment is required" .Values.target.deployment | quote }}
+      {{- range $deps | uniq }}
+      - {{ . | quote }}
+      {{- end }}
     verbs:
       - get
       - patch
@@ -28,16 +40,17 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: {{ include "sighup.fullname" . }}
-  namespace: {{ include "sighup.targetNamespace" . }}
+  name: {{ include "sighup.fullname" $root }}
+  namespace: {{ $ns }}
   labels:
-    {{- include "sighup.labels" . | nindent 4 }}
+    {{- include "sighup.labels" $root | nindent 4 }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
-  name: {{ include "sighup.fullname" . }}
+  name: {{ include "sighup.fullname" $root }}
 subjects:
   - kind: ServiceAccount
-    name: {{ include "sighup.serviceAccountName" . }}
-    namespace: {{ .Release.Namespace }}
+    name: {{ include "sighup.serviceAccountName" $root }}
+    namespace: {{ $releaseNS }}
+{{- end }}
 {{- end }}

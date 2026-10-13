@@ -1,9 +1,9 @@
 # Defaults for the sighup chart. Every knob is documented here; there is deliberately no
 # `values.schema.json`, so read this file.
 
-# The default is the Harbor mirror: this is a private tool, not an upstream chart.
+# Sighup's own image ships from ghcr (GitHub Container Registry).
 image:
-  repository: harbor.vn.linuxguru.net/library/sighup
+  repository: ghcr.io/jdblack/sighup
   # Defaults to the chart's appVersion when empty.
   tag: ""
   pullPolicy: IfNotPresent
@@ -17,41 +17,43 @@ fullnameOverride: sighup
 replicaCount: 1
 
 # Sighup authenticates to the API with this token, so automount must stay true -- that is the
-# entire design: no kubeconfig, no secret in git, no CI credential. It patches exactly one object
-# (see `rbac`).
+# entire design: no kubeconfig, no secret in git, no CI credential. It patches only the named
+# Deployments in `targets` (see `rbac`), nothing else.
 serviceAccount:
   create: true
   automount: true
   annotations: {}
   name: ""
 
-# What to watch and roll. There is deliberately NO default target: a sighup must know nothing about
-# any particular app, so the release names one explicitly and fails loudly if it does not.
-#
-# ONE RELEASE PER TARGET. The Role pins `deployment` by name, which is the whole reason the
-# privilege stays tiny; a sighup that rolled several Deployments would need a wider Role. A herd is
-# handled by installing this chart once per member -- not by teaching the chart about a herd.
-#
-# `namespace` defaults to the release namespace; the Role and RoleBinding land there, so a
-# cross-namespace target puts only the RBAC in the other namespace.
-target:
-  # Registry host, no scheme.
-  registry: harbor.vn.linuxguru.net
-  # Repository path inside the registry, e.g. `library/someapp`.
-  repository: ""
-  # The MOVING tag to track. Whichever tag you name is the promotion gate: whatever CI publishes
-  # under it is what goes live. Tracking a promoted tag (`stable`) is what buys a human gate.
-  tag: ""
-  namespace: ""
-  # The Deployment to roll.
-  deployment: ""
-  # The pod-template annotation sighup owns. Its value is the digest it is rolling to, so
-  # writing it both records the intent and forces the rollout. One sighup per Deployment means one
-  # key is enough; it is configurable only so two sighups on one Deployment cannot collide.
-  annotation: sighup.vn.linuxguru.net/applied
+# The registry host every target is watched in. One sighup watches one registry; a second registry
+# is a second sighup.
+registry: ghcr.io
 
-# The Role grants get+patch on exactly one named Deployment. That pin IS the security story; there
-# is no reason to turn this off, and no way to widen it here.
+# What to watch and roll. There is deliberately NO default: a sighup must know nothing about any
+# particular app, so the release names its targets explicitly and fails loudly if it names none.
+#
+# Each target is one Deployment and the moving tag that drives it; sighup rolls the Deployment when
+# that tag's digest moves. A single push can fan out to every target watching it, which is the point
+# of running more than one.
+#
+# SCOPE IS THE LIST. The Role pins these Deployments by name, so the blast radius of a bug or a
+# stamped-on credential is exactly what is typed here -- never a wildcard, never a namespace.
+#
+# `namespace` defaults to the release namespace; RBAC for a cross-namespace target lands in that
+# target's namespace.
+#
+# targets:
+#   - repository: library/someapp
+#     tag: edge
+#     namespace: app            # optional; defaults to the release namespace
+#     deployment: someapp
+#     annotation: ""            # optional; defaults to sighup/applied
+targets: []
+
+
+# The Role grants get+patch on the named Deployments only -- one Role per namespace, listing that
+# namespace's Deployments by name. That pin IS the scope story; there is no reason to turn this off,
+# and no way to widen it to a wildcard here.
 rbac:
   create: true
 
