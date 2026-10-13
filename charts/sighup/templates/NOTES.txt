@@ -5,13 +5,27 @@ sighup is watching {{ .Values.registry }} for {{ len .Values.targets }} target(s
 {{- end }}
 
 and will roll each Deployment when its tracked tag's digest moves.
+{{- if .Values.cronjob.enabled }}
+{{- if .Values.deployment.enabled }}
 
-{{- if gt (int .Values.replicaCount) 1 }}
+  WARNING: both the resident Deployment and the CronJob are enabled. Two writers race the same
+  annotation, and the lock is per-process. Set deployment.enabled=false to run the CronJob alone.
+{{- else }}
 
-  WARNING: replicaCount={{ .Values.replicaCount }} — two sighups race the same annotations. The lock
-  is per-process, so they cannot serialise with each other. Keep it at 1.
+Method: CronJob "{{ include "sighup.fullname" . }}" on schedule "{{ .Values.cronjob.schedule }}".
+Each run checks every target and exits; no Service or webhook is involved.
+{{- end }}
 {{- end }}
 
+{{- if .Values.deployment.enabled }}
+{{- if gt (int .Values.replicaCount) 1 }}
+
+  WARNING: replicaCount={{ .Values.replicaCount }}. Two sighups race the same annotations, and the
+  lock is per-process, so they cannot serialise with each other. Keep it at 1.
+{{- end }}
+{{- end }}
+
+{{- if .Values.deployment.enabled }}
 {{- if .Values.service.enabled }}
 
 Harbor should POST to (payload format "Default"):
@@ -20,20 +34,24 @@ Harbor should POST to (payload format "Default"):
 
 {{- if ne (include "sighup.webhookAuthEnabled" .) "true" }}
 
-  WARNING: no webhook secret is configured — the endpoint is UNAUTHENTICATED. Anyone who can reach
-  that Service can roll every target. Set webhook.secret.existingSecret (preferred) or
-  webhook.secret.create.
+  WARNING: no webhook secret is configured, so the endpoint is UNAUTHENTICATED. Anyone who can
+  reach that Service can roll every target. Please set webhook.secret.existingSecret (preferred)
+  or webhook.secret.create.
 {{- end }}
 
 {{- else }}
 
-NOTE: service.enabled=false — the container still listens on :{{ .Values.service.port }}, but there
+NOTE: service.enabled=false. The container still listens on :{{ .Values.service.port }}, but there
 is no Service in front of it, so the webhook can never arrive. The poll loop still runs.
 {{- end }}
+{{- end }}
+
+{{- if .Values.deployment.enabled }}
 
 The poll interval is {{ .Values.poll.interval }}. It is the safety net, not the fast path: Harbor
 retries a failed webhook only three times with a 3s client timeout, so a missed delivery would
 otherwise leave a Deployment stale forever.
+{{- end }}
 
 Check what each has applied:
 

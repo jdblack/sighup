@@ -14,7 +14,7 @@ CHART_TEST    ?= --set targets[0].repository=library/example \
                  --set targets[0].tag=edge \
                  --set targets[0].deployment=example
 
-.PHONY: build tidy test fmt vet lint docker-build run-once clean \
+.PHONY: build tidy test fmt vet lint docker-build run-cronjob clean \
         chart-lint chart-guard chart-template chart-package chart-push
 
 build:        ## compile the binary
@@ -37,8 +37,8 @@ lint: fmt vet ## format + vet
 docker-build: ## build the runtime image
 	docker build -t $(IMAGE):dev .
 
-run-once:     ## run `once` locally; export SIGHUP_REGISTRY and SIGHUP_TARGETS first
-	$(GO) run . once
+run-cronjob:  ## run the `cronjob` mode locally; export SIGHUP_REGISTRY and SIGHUP_TARGETS first
+	$(GO) run . cronjob
 
 chart-lint:      ## lint the chart (strict)
 	helm lint --strict $(CHART) --kube-version $(KUBE_VERSION) $(CHART_TEST)

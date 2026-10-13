@@ -1,4 +1,4 @@
-{{- if .Values.service.enabled }}
+{{- if and .Values.service.enabled .Values.deployment.enabled }}
 {{/*
 Both ends of the webhook are in-cluster -- Harbor POSTs from its own namespace -- so a ClusterIP
 Service is the whole exposure. No Gateway, no certificate, no external DNS.

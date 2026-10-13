@@ -1,3 +1,7 @@
+{{- if and (not .Values.deployment.enabled) (not .Values.cronjob.enabled) }}
+{{- fail "neither deployment.enabled nor cronjob.enabled is set: nothing would run. Enable one shape." }}
+{{- end }}
+{{- if .Values.deployment.enabled }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -49,37 +53,14 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           command: ["sighup"]
           # `serve` = webhook listener + poll loop. The poll is what makes a missed webhook a
-          # non-event; `once` exists for a CronJob, which cannot receive a webhook at all.
+          # non-event; the `cronjob` mode exists for a CronJob, which cannot receive a webhook.
           args: ["serve"]
           ports:
             - name: http
               containerPort: {{ include "sighup.port" . }}
               protocol: TCP
           env:
-            - name: SIGHUP_REGISTRY
-              value: {{ required "registry is required (the registry host every target lives in)" .Values.registry | quote }}
-            # The whole target list, JSON-encoded. One var, because a list does not fit the k=v shape
-            # and N indexed vars would be a worse lie.
-            - name: SIGHUP_TARGETS
-              value: {{ include "sighup.targets" . | quote }}
-            - name: SIGHUP_LISTEN
-              value: {{ printf ":%v" (include "sighup.port" .) | quote }}
-            - name: SIGHUP_POLL_INTERVAL
-              value: {{ .Values.poll.interval | quote }}
-            - name: SIGHUP_TIMEOUT
-              value: {{ .Values.poll.timeout | quote }}
-            - name: SIGHUP_WEBHOOK_HEADER
-              value: {{ .Values.webhook.header | quote }}
-            {{- if eq (include "sighup.webhookAuthEnabled" .) "true" }}
-            - name: SIGHUP_WEBHOOK_SECRET
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "sighup.webhookSecretName" . }}
-                  key: {{ .Values.webhook.secret.key }}
-            {{- end }}
-            {{- with .Values.env }}
-            {{- toYaml . | nindent 12 }}
-            {{- end }}
+            {{- include "sighup.env" . | nindent 12 }}
           livenessProbe:
             {{- toYaml .Values.probes.liveness | nindent 12 }}
           readinessProbe:
@@ -99,3 +80,4 @@ spec:
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+{{- end }}

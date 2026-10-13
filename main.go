@@ -3,8 +3,8 @@
 //
 // Two modes:
 //
-//	serve  receive Harbor webhooks AND poll on an interval (a resident Deployment)
-//	once   run a single check across every target and exit (a CronJob)
+//	serve    receive Harbor webhooks AND poll on an interval (a resident Deployment)
+//	cronjob  check every target and exit; run it from a CronJob for scheduled checks
 //
 // The poll loop is not optional in `serve`: Harbor retries a failed webhook only three times with
 // a 3s client timeout, so a missed delivery would otherwise leave a Deployment stale forever.
@@ -34,7 +34,7 @@ func run() error {
 	fs := flag.NewFlagSet("sighup", flag.ExitOnError)
 	debug := fs.Bool("debug", false, "enable debug logging")
 	fs.Usage = func() {
-		fmt.Fprintf(fs.Output(), "usage: sighup [flags] (serve|once)\n\n")
+		fmt.Fprintf(fs.Output(), "usage: sighup [flags] (serve|cronjob)\n\n")
 		fs.PrintDefaults()
 	}
 	_ = fs.Parse(os.Args[1:])
@@ -64,12 +64,12 @@ func run() error {
 	defer stop()
 
 	switch mode {
-	case "once":
+	case "cronjob":
 		return runOnce(ctx, engine, log)
 	case "serve":
 		return engine.Serve(ctx)
 	default:
-		return fmt.Errorf("unknown mode %q: want serve or once", mode)
+		return fmt.Errorf("unknown mode %q: want serve or cronjob", mode)
 	}
 }
 

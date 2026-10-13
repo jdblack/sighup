@@ -106,3 +106,33 @@ Name of the Secret carrying the webhook auth header (created here, or provided).
 {{- printf "%s-webhook" (include "sighup.fullname" .) -}}
 {{- end -}}
 {{- end }}
+
+{{/*
+The container environment, shared by the Deployment and the CronJob so the two shapes cannot drift.
+Built-ins first, then any extra `env`. Callers indent the whole block themselves.
+*/}}
+{{- define "sighup.env" -}}
+- name: SIGHUP_REGISTRY
+  value: {{ required "registry is required (the registry host every target lives in)" .Values.registry | quote }}
+# The whole target list, JSON-encoded: one var carrying a list, rather than N indexed vars.
+- name: SIGHUP_TARGETS
+  value: {{ include "sighup.targets" . | quote }}
+- name: SIGHUP_LISTEN
+  value: {{ printf ":%v" (include "sighup.port" .) | quote }}
+- name: SIGHUP_POLL_INTERVAL
+  value: {{ .Values.poll.interval | quote }}
+- name: SIGHUP_TIMEOUT
+  value: {{ .Values.poll.timeout | quote }}
+- name: SIGHUP_WEBHOOK_HEADER
+  value: {{ .Values.webhook.header | quote }}
+{{- if eq (include "sighup.webhookAuthEnabled" .) "true" }}
+- name: SIGHUP_WEBHOOK_SECRET
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "sighup.webhookSecretName" . }}
+      key: {{ .Values.webhook.secret.key }}
+{{- end }}
+{{- with .Values.env }}
+{{- toYaml . }}
+{{- end }}
+{{- end }}

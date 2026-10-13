@@ -9,8 +9,8 @@ import (
 )
 
 // Engine owns the set of Targets: one Roller per target, over a shared registry and API client. It
-// is what the binary actually runs -- `once` walks every target, `serve` polls them and routes
-// webhooks to the matching subset.
+// is what the binary actually runs -- `cronjob` checks every target and exits, `serve` runs the poll
+// loop and routes webhooks to the matching subset.
 type Engine struct {
 	cfg     Config
 	rollers []*Roller

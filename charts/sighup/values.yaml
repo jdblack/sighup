@@ -16,6 +16,12 @@ fullnameOverride: sighup
 # in-process lock cannot help across pods -- hence also the Recreate strategy below.
 replicaCount: 1
 
+# The resident method (`serve`): a Deployment that serves the webhook and polls on an interval. On by
+# default. Turn it off only when you run the CronJob method below instead -- the two must not run
+# together against the same targets, because two writers race the same annotation.
+deployment:
+  enabled: true
+
 # Sighup authenticates to the API with this token, so automount must stay true -- that is the
 # entire design: no kubeconfig, no secret in git, no CI credential. It patches only the named
 # Deployments in `targets` (see `rbac`), nothing else.
@@ -62,6 +68,23 @@ rbac:
 poll:
   interval: 15m
   timeout: 30s
+
+# The scheduled method (`cronjob`): a CronJob that checks every target on a schedule and exits. No
+# resident pod, no Service, no webhook; the cadence is your cron `schedule`. This is an alternative
+# to the Deployment, not an addition, so enable it and set `deployment.enabled=false`.
+cronjob:
+  enabled: false
+  # Standard five-field cron.
+  schedule: "*/15 * * * *"
+  # Optional IANA zone (Kubernetes >= 1.27 for GA); empty means the cluster's local time.
+  timeZone: ""
+  # Forbid overlap: a slow run must never meet the next tick and double up.
+  concurrencyPolicy: Forbid
+  # OnFailure retries within a run on a transient error; the next tick is the real retry.
+  restartPolicy: OnFailure
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  suspend: false
 
 # The webhook receiver. The container always listens; this only decides whether a Service fronts it
 # so Harbor can POST to it. Both ends are in-cluster, so no gateway or certificate is involved.

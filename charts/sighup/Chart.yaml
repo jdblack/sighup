@@ -1,8 +1,8 @@
 apiVersion: v2
 name: sighup
-description: Rolls a Deployment when a registry tag's digest moves (Harbor webhook + poll)
+description: Rolls Deployments when a registry tag's digest moves (webhook, poll, or a scheduled CronJob)
 type: application
-version: 0.1.0
+version: 0.2.0
 # Manual: the Go binary carries no version string, so there is nothing for CI to guard this against.
 # Bump it by hand when the app changes.
 appVersion: "0.1.0"
@@ -14,6 +14,7 @@ keywords:
   - registry
   - webhook
   - harbor
+  - cronjob
 maintainers:
   - name: James Blackwell
     email: helm@linuxguru.net
