@@ -1,0 +1,50 @@
+name: publish-ghcr
+
+# The public image home. GitHub publishes it to ghcr using the workflow's own GITHUB_TOKEN, which
+# carries `packages: write` -- no PAT, nothing to rotate, and no secret to keep in sync.
+#
+# Harbor is published separately by the Forgejo workflow (.forgejo/workflows/publish-dev.yml): the
+# same `git push` reaches both, since the `forgejo` remote pushes to Forgejo and GitHub in one shot.
+#
+# Gotcha: the package is PRIVATE on first push. Flip it to public in the package settings, or
+# anonymous pulls (which the chart's default image assumes) will 403.
+on:
+  push:
+    branches: [dev]
+  workflow_dispatch: # manual republish
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Short sha
+        id: sha
+        run: echo "short=$(echo "${GITHUB_SHA}" | cut -c1-7)" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to ghcr
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # The Dockerfile's `test` stage runs here too, so a red suite means nothing is pushed.
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          # sha-<short> first: the immutable handle, so it exists before the moving tag.
+          tags: |
+            ${{ env.IMAGE }}:sha-${{ steps.sha.outputs.short }}
+            ${{ env.IMAGE }}:edge
