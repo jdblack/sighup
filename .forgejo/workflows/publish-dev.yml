@@ -1,0 +1,56 @@
+name: publish-dev
+
+# Build the image and push it to Harbor on every commit to `dev`.
+#
+# Go needs no dependency-layer image (there is no Rust-style builder image to warm): `go mod
+# download` against the module proxy is fast enough that a cold build is a couple of minutes, so the
+# pipeline is just the one Dockerfile.
+#
+# Credentials are the repo-level Actions secrets HARBOR_USER / HARBOR_TOKEN, written by
+# `module.forgejo_setup` in the k8s_tf mantle stack -- the same Harbor robot the other repos use,
+# scoped to pull+push and tag create+list on the public `library` project. Anonymous pulls still
+# work, so the cluster needs no imagePullSecret.
+#
+# Tags follow the house convention: `edge` (moving) plus the immutable `sha-<short>`.
+on:
+  push:
+    branches: [dev]
+  workflow_dispatch: # manual republish, e.g. after rotating the robot
+
+env:
+  REGISTRY: harbor.vn.linuxguru.net
+  IMAGE: harbor.vn.linuxguru.net/library/sighup
+  GO_IMAGE: golang:1.27
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to Harbor
+        env:
+          HARBOR_USER: ${{ secrets.HARBOR_USER }}
+          HARBOR_TOKEN: ${{ secrets.HARBOR_TOKEN }}
+        run: |
+          set -eu
+          # The robot name contains a `$` (robot$library+forgejo); quoted, so the shell leaves it be.
+          echo "$HARBOR_TOKEN" | docker login "$REGISTRY" -u "$HARBOR_USER" --password-stdin
+
+      # The job container carries no Go toolchain, so tests run in the official image through the
+      # DinD daemon -- the same daemon the image build uses below.
+      - name: Test
+        run: |
+          set -eu
+          docker run --rm -v "$PWD":/src -w /src "$GO_IMAGE" go test ./...
+
+      - name: Build and push
+        run: |
+          set -eu
+          short=$(echo "${{ github.sha }}" | cut -c1-7)
+          echo "building $IMAGE:sha-$short"
+          docker build --platform linux/amd64 -t "$IMAGE:edge" -t "$IMAGE:sha-$short" .
+          # sha-<short> first: it is the immutable handle, so it exists before the moving tag.
+          docker push "$IMAGE:sha-$short"
+          docker push "$IMAGE:edge"
+          echo "pushed $IMAGE:sha-$short and $IMAGE:edge"

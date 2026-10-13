@@ -1,0 +1,43 @@
+{{- if .Values.rbac.create -}}
+{{/*
+The whole security story, in one rule: one API group, one resource, ONE NAME, two verbs. There is
+no cluster-scoped object here and no wildcard, so the worst a compromised sighup can do is restart
+the Deployment it was pointed at.
+
+The Role and RoleBinding live in the target namespace (which need not be the release namespace),
+while the ServiceAccount stays with the release; a cross-namespace subject is allowed.
+*/}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "sighup.fullname" . }}
+  namespace: {{ include "sighup.targetNamespace" . }}
+  labels:
+    {{- include "sighup.labels" . | nindent 4 }}
+rules:
+  - apiGroups:
+      - apps
+    resources:
+      - deployments
+    resourceNames:
+      - {{ required "target.deployment is required" .Values.target.deployment | quote }}
+    verbs:
+      - get
+      - patch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "sighup.fullname" . }}
+  namespace: {{ include "sighup.targetNamespace" . }}
+  labels:
+    {{- include "sighup.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "sighup.fullname" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "sighup.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

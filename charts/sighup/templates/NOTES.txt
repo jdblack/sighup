@@ -1,0 +1,37 @@
+sighup is watching {{ .Values.target.registry }}/{{ .Values.target.repository }}:{{ .Values.target.tag }}
+and will roll {{ include "sighup.targetNamespace" . }}/{{ .Values.target.deployment }} when that
+tag's digest moves.
+
+{{- if gt (int .Values.replicaCount) 1 }}
+
+  WARNING: replicaCount={{ .Values.replicaCount }} — two sighups race the same annotation. The lock
+  is per-process, so they cannot serialise with each other. Keep it at 1.
+{{- end }}
+
+{{- if .Values.service.enabled }}
+
+Harbor should POST to (payload format "Default"):
+
+  http://{{ include "sighup.fullname" . }}.{{ .Release.Namespace }}.svc:{{ .Values.service.port }}/hook
+
+{{- if ne (include "sighup.webhookAuthEnabled" .) "true" }}
+
+  WARNING: no webhook secret is configured — the endpoint is UNAUTHENTICATED. Anyone who can reach
+  that Service can roll the Deployment. Set webhook.secret.existingSecret (preferred) or
+  webhook.secret.create.
+{{- end }}
+
+{{- else }}
+
+NOTE: service.enabled=false — the container still listens on :{{ .Values.service.port }}, but there
+is no Service in front of it, so the webhook can never arrive. The poll loop still runs.
+{{- end }}
+
+The poll interval is {{ .Values.poll.interval }}. It is the safety net, not the fast path: Harbor
+retries a failed webhook only three times with a 3s client timeout, so a missed delivery would
+otherwise leave the Deployment stale forever.
+
+Check what it has applied:
+
+  kubectl --namespace {{ include "sighup.targetNamespace" . }} get deploy {{ .Values.target.deployment }} \
+    -o jsonpath='{.spec.template.metadata.annotations.{{ .Values.target.annotation }}}'

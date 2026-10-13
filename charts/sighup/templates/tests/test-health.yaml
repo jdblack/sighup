@@ -1,0 +1,19 @@
+{{- if .Values.service.enabled }}
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "{{ include "sighup.fullname" . }}-test-health"
+  labels:
+    {{- include "sighup.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": test
+spec:
+  restartPolicy: Never
+  containers:
+    - name: health-check
+      image: busybox
+      command: ["sh", "-c"]
+      # /healthz is always 200; /readyz would be the stronger signal but proves the same plumbing.
+      args:
+        - "wget -qO- http://{{ include "sighup.fullname" . }}:{{ .Values.service.port }}/healthz && echo 'sighup is up'"
+{{- end }}

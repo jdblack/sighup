@@ -1,0 +1,107 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "sighup.fullname" . }}
+  labels:
+    {{- include "sighup.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  {{- with .Values.strategy }}
+  # Recreate, not RollingUpdate: a rolling update would briefly run two sighups, and the mutex that
+  # serialises patches is per-process. One writer, always.
+  strategy:
+    type: {{ . }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "sighup.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- if or .Values.webhook.secret.create .Values.podAnnotations }}
+      annotations:
+        {{- if .Values.webhook.secret.create }}
+        # Rolls the pod when the chart-owned webhook Secret changes. Pointless (and impossible) for
+        # an externally managed Secret, which is why it is gated on `create`.
+        checksum/webhook-secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        {{- end }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- end }}
+      labels:
+        {{- include "sighup.labels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "sighup.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: {{ .Chart.Name }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["sighup"]
+          # `serve` = webhook listener + poll loop. The poll is what makes a missed webhook a
+          # non-event; `once` exists for a CronJob, which cannot receive a webhook at all.
+          args: ["serve"]
+          ports:
+            - name: http
+              containerPort: {{ include "sighup.port" . }}
+              protocol: TCP
+          env:
+            - name: SIGHUP_REGISTRY
+              value: {{ .Values.target.registry | quote }}
+            - name: SIGHUP_REPOSITORY
+              value: {{ required "target.repository is required (e.g. library/someapp)" .Values.target.repository | quote }}
+            - name: SIGHUP_TAG
+              value: {{ required "target.tag is required (the moving tag to track, e.g. edge)" .Values.target.tag | quote }}
+            - name: SIGHUP_NAMESPACE
+              value: {{ include "sighup.targetNamespace" . | quote }}
+            - name: SIGHUP_DEPLOYMENT
+              value: {{ required "target.deployment is required (the Deployment to roll)" .Values.target.deployment | quote }}
+            - name: SIGHUP_ANNOTATION
+              value: {{ .Values.target.annotation | quote }}
+            - name: SIGHUP_LISTEN
+              value: {{ printf ":%v" (include "sighup.port" .) | quote }}
+            - name: SIGHUP_POLL_INTERVAL
+              value: {{ .Values.poll.interval | quote }}
+            - name: SIGHUP_TIMEOUT
+              value: {{ .Values.poll.timeout | quote }}
+            - name: SIGHUP_WEBHOOK_HEADER
+              value: {{ .Values.webhook.header | quote }}
+            {{- if eq (include "sighup.webhookAuthEnabled" .) "true" }}
+            - name: SIGHUP_WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "sighup.webhookSecretName" . }}
+                  key: {{ .Values.webhook.secret.key }}
+            {{- end }}
+            {{- with .Values.env }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          livenessProbe:
+            {{- toYaml .Values.probes.liveness | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.probes.readiness | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

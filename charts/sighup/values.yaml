@@ -1,0 +1,148 @@
+# Defaults for the sighup chart. Every knob is documented here; there is deliberately no
+# `values.schema.json`, so read this file.
+
+# The default is the Harbor mirror: this is a private tool, not an upstream chart.
+image:
+  repository: harbor.vn.linuxguru.net/library/sighup
+  # Defaults to the chart's appVersion when empty.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: sighup
+
+# A sighup is a singleton. Two replicas would race each other patching the same annotation, and the
+# in-process lock cannot help across pods -- hence also the Recreate strategy below.
+replicaCount: 1
+
+# Sighup authenticates to the API with this token, so automount must stay true -- that is the
+# entire design: no kubeconfig, no secret in git, no CI credential. It patches exactly one object
+# (see `rbac`).
+serviceAccount:
+  create: true
+  automount: true
+  annotations: {}
+  name: ""
+
+# What to watch and roll. There is deliberately NO default target: a sighup must know nothing about
+# any particular app, so the release names one explicitly and fails loudly if it does not.
+#
+# ONE RELEASE PER TARGET. The Role pins `deployment` by name, which is the whole reason the
+# privilege stays tiny; a sighup that rolled several Deployments would need a wider Role. A herd is
+# handled by installing this chart once per member -- not by teaching the chart about a herd.
+#
+# `namespace` defaults to the release namespace; the Role and RoleBinding land there, so a
+# cross-namespace target puts only the RBAC in the other namespace.
+target:
+  # Registry host, no scheme.
+  registry: harbor.vn.linuxguru.net
+  # Repository path inside the registry, e.g. `library/someapp`.
+  repository: ""
+  # The MOVING tag to track. Whichever tag you name is the promotion gate: whatever CI publishes
+  # under it is what goes live. Tracking a promoted tag (`stable`) is what buys a human gate.
+  tag: ""
+  namespace: ""
+  # The Deployment to roll.
+  deployment: ""
+  # The pod-template annotation sighup owns. Its value is the digest it is rolling to, so
+  # writing it both records the intent and forces the rollout. One sighup per Deployment means one
+  # key is enough; it is configurable only so two sighups on one Deployment cannot collide.
+  annotation: sighup.vn.linuxguru.net/applied
+
+# The Role grants get+patch on exactly one named Deployment. That pin IS the security story; there
+# is no reason to turn this off, and no way to widen it here.
+rbac:
+  create: true
+
+# The poll loop. Not optional: Harbor retries a webhook only three times with a 3s timeout, so a
+# missed delivery would otherwise leave the Deployment stale forever.
+poll:
+  interval: 15m
+  timeout: 30s
+
+# The webhook receiver. The container always listens; this only decides whether a Service fronts it
+# so Harbor can POST to it. Both ends are in-cluster, so no gateway or certificate is involved.
+service:
+  enabled: true
+  type: ClusterIP
+  port: 8080
+  annotations: {}
+
+webhook:
+  # Header Harbor sends and sighup compares, verbatim, in constant time.
+  header: Authorization
+  secret:
+    # Preferred: create the Secret outside the chart (Terraform), so it never reaches Helm values
+    # nor the release Secret that Helm stores them in.
+    existingSecret: ""
+    key: secret
+    # Standalone fallback. Off by default on purpose -- a value here lands in the release Secret.
+    create: false
+    value: ""
+
+# HTTP probes against sighup's own endpoints.
+probes:
+  liveness:
+    httpGet:
+      path: /healthz
+      port: http
+    initialDelaySeconds: 5
+    periodSeconds: 30
+    timeoutSeconds: 3
+    failureThreshold: 3
+  readiness:
+    httpGet:
+      path: /readyz
+      port: http
+    initialDelaySeconds: 2
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 3
+
+# A poll is one HTTPS HEAD plus one API get; the tool is idle the rest of the time.
+resources:
+  requests:
+    cpu: 10m
+    memory: 32Mi
+  limits:
+    memory: 128Mi
+
+# Never 2: a rolling update would briefly run two sighups, and the lock is per-process. Recreate
+# guarantees a single writer, at the cost of a short gap where nothing is watching.
+strategy: Recreate
+
+terminationGracePeriodSeconds: 15
+
+podAnnotations: {}
+podLabels: {}
+
+# The image already runs as the distroless `nonroot` uid; this only pins it explicitly.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+# Extra env vars, appended after the built-ins (list of EnvVar).
+env: []
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# Free-form NetworkPolicy rules; only rendered when enabled. Empty list = deny that direction.
+# Two are needed for the webhook: egress to Harbor (digest reads) and the API server, and ingress
+# from the Harbor namespace on `service.port`.
+networkPolicy:
+  enabled: false
+  ingress: []
+  egress: []
