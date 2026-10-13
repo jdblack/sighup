@@ -6,8 +6,8 @@ name: publish-ghcr
 # Harbor is published separately by the Forgejo workflow (.forgejo/workflows/publish-dev.yml): the
 # same `git push` reaches both, since the `forgejo` remote pushes to Forgejo and GitHub in one shot.
 #
-# Gotcha: the package is PRIVATE on first push. Flip it to public in the package settings, or
-# anonymous pulls (which the chart's default image assumes) will 403.
+# The package is public, so the chart's default image (ghcr.io/jdblack/sighup) pulls anonymously.
+# (Note: a freshly created ghcr package starts private -- flip it in package settings if recreated.)
 on:
   push:
     branches: [dev]
