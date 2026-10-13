@@ -1,16 +1,17 @@
 name: publish-ghcr
 
-# The public image home. GitHub publishes it to ghcr using the workflow's own GITHUB_TOKEN, which
-# carries `packages: write` -- no PAT, nothing to rotate, and no secret to keep in sync.
+# Publishes the public image AND chart to ghcr on every commit to `main`, using the workflow's own
+# GITHUB_TOKEN (which carries `packages: write`) -- no PAT, nothing to rotate, no secret to sync.
 #
-# Harbor is published separately by the Forgejo workflow (.forgejo/workflows/publish-dev.yml): the
-# same `git push` reaches both, since the `forgejo` remote pushes to Forgejo and GitHub in one shot.
+# `dev` is published to Harbor instead, by the Forgejo workflow (.forgejo/workflows/publish-dev.yml).
+# So `dev` -> Harbor (bleeding edge, in-cluster) and `main` -> ghcr (public releases): one push no
+# longer drives both.
 #
 # The package is public, so the chart's default image (ghcr.io/jdblack/sighup) pulls anonymously.
 # (Note: a freshly created ghcr package starts private -- flip it in package settings if recreated.)
 on:
   push:
-    branches: [dev]
+    branches: [main]
   workflow_dispatch: # manual republish
 
 permissions:
@@ -19,6 +20,7 @@ permissions:
 
 env:
   IMAGE: ghcr.io/${{ github.repository }}
+  CHART_OCI: oci://ghcr.io/jdblack/charts
 
 jobs:
   publish:
@@ -48,3 +50,21 @@ jobs:
           tags: |
             ${{ env.IMAGE }}:sha-${{ steps.sha.outputs.short }}
             ${{ env.IMAGE }}:edge
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+
+      # The chart at the version Chart.yaml declares. `main` is the release branch, so a chart change
+      # means a Chart.yaml bump before merge -- Helm OCI refuses to overwrite an existing version.
+      - name: Package and push chart to ghcr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          version="$(grep -E '^version:' charts/sighup/Chart.yaml | head -1 | awk '{print $2}')"
+          echo "packaging sighup $version"
+          helm registry login ghcr.io -u "${{ github.actor }}" -p "$GH_TOKEN"
+          helm package charts/sighup --version "$version" --destination .
+          helm push "sighup-$version.tgz" "$CHART_OCI"
+          rm -f "sighup-$version.tgz"
+          echo "pushed $CHART_OCI/sighup:$version"

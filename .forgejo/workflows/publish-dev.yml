@@ -1,6 +1,6 @@
 name: publish-dev
 
-# Build the image and push it to Harbor on every commit to `dev`.
+# Build the image and the chart, and push both to Harbor, on every commit to `dev`.
 #
 # Go needs no dependency-layer image (there is no Rust-style builder image to warm): `go mod
 # download` against the module proxy is fast enough that a cold build is a couple of minutes, so the
@@ -13,8 +13,9 @@ name: publish-dev
 #
 # Tags follow the house convention: `edge` (moving) plus the immutable `sha-<short>`.
 #
-# Harbor only. The public image (ghcr) is published from GitHub by .github/workflows/publish-ghcr.yml,
-# which rides GitHub's native GITHUB_TOKEN -- so there is no PAT to mint here or rotate.
+# Publishes the image AND the chart to Harbor, on `dev`. The public side (ghcr) is published from
+# GitHub by .github/workflows/publish-ghcr.yml, on `main`, riding GitHub's native GITHUB_TOKEN --
+# so there is no PAT to mint here or rotate. `dev` -> Harbor, `main` -> ghcr.
 on:
   push:
     branches: [dev]
@@ -23,6 +24,7 @@ on:
 env:
   REGISTRY: harbor.vn.linuxguru.net
   IMAGE: harbor.vn.linuxguru.net/library/sighup
+  CHART_OCI: oci://harbor.vn.linuxguru.net/library/charts
 
 jobs:
   publish:
@@ -53,3 +55,24 @@ jobs:
           docker push "$IMAGE:sha-$short"
           docker push "$IMAGE:edge"
           echo "pushed $IMAGE:sha-$short and $IMAGE:edge"
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+
+      # The chart, as a moving dev prerelease. Helm OCI refuses to overwrite a version, so the
+      # committed Chart.yaml version alone would collide on every second push; `-dev.<short>` keeps
+      # each one unique and installable by exact version.
+      - name: Package and push chart to Harbor
+        env:
+          HARBOR_USER: ${{ secrets.HARBOR_USER }}
+          HARBOR_TOKEN: ${{ secrets.HARBOR_TOKEN }}
+        run: |
+          set -eu
+          short=$(echo "${{ github.sha }}" | cut -c1-7)
+          version="$(grep -E '^version:' charts/sighup/Chart.yaml | head -1 | awk '{print $2}')-dev.$short"
+          echo "packaging sighup $version"
+          helm registry login "$REGISTRY" -u "$HARBOR_USER" -p "$HARBOR_TOKEN"
+          helm package charts/sighup --version "$version" --destination .
+          helm push "sighup-$version.tgz" "$CHART_OCI"
+          rm -f "sighup-$version.tgz"
+          echo "pushed $CHART_OCI/sighup:$version"
