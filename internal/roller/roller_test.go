@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -289,5 +291,195 @@ func TestConfigFromEnv(t *testing.T) {
 	t.Setenv("SIGHUP_TARGETS", `[{"repository":"library/someapp","tag":"edge","namespace":"app","deployment":"someapp"}]`)
 	if _, err := ConfigFromEnv(); err == nil {
 		t.Fatal("expected an error when SIGHUP_REGISTRY is empty")
+	}
+}
+
+func TestHandlerProbes(t *testing.T) {
+	app := target("app", "someapp", "library/someapp", "edge")
+	e, _ := newTestEngine(t, []Target{app}, mapDigest{})
+
+	for _, path := range []string{"/healthz", "/readyz"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		w := httptest.NewRecorder()
+		e.Handler().ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("GET %s = %d, want 200", path, w.Code)
+		}
+	}
+}
+
+func TestWebhookRejectsBadPayload(t *testing.T) {
+	app := target("app", "someapp", "library/someapp", "edge")
+	e, _ := newTestEngine(t, []Target{app}, mapDigest{})
+
+	req := httptest.NewRequest(http.MethodPost, "/hook", strings.NewReader("not json"))
+	w := httptest.NewRecorder()
+	e.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("code = %d, want 400", w.Code)
+	}
+}
+
+func TestWebhookIgnoresNonPushEvent(t *testing.T) {
+	app := target("app", "someapp", "library/someapp", "edge")
+	e, _ := newTestEngine(t, []Target{app}, mapDigest{})
+
+	body := `{"type":"SCANNING_COMPLETED","event_data":{"resources":[{"tag":"edge"}],"repository":{"repo_full_name":"library/someapp"}}}`
+	req := httptest.NewRequest(http.MethodPost, "/hook", strings.NewReader(body))
+	w := httptest.NewRecorder()
+	e.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("code = %d, want 200 (ignored)", w.Code)
+	}
+}
+
+// A target may override the annotation key, so two sighups on one Deployment cannot collide.
+func TestCustomAnnotation(t *testing.T) {
+	app := target("app", "someapp", "library/someapp", "edge")
+	app.Annotation = "example.com/sighup"
+	e, kube := newTestEngine(t, []Target{app}, mapDigest{ref("library/someapp", "edge"): "sha256:aaa"})
+
+	if res := e.RunOnce(context.Background()); res[0].Err != nil {
+		t.Fatalf("RunOnce: %v", res[0].Err)
+	}
+
+	dep, err := kube.AppsV1().Deployments("app").Get(context.Background(), "someapp", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := dep.Spec.Template.Annotations["example.com/sighup"]; got != "sha256:aaa" {
+		t.Fatalf("custom annotation = %q, want sha256:aaa", got)
+	}
+	if _, ok := dep.Spec.Template.Annotations[DefaultAnnotation]; ok {
+		t.Fatalf("the default annotation should be untouched when a custom one is set")
+	}
+}
+
+// A target whose Deployment is missing must fail that one check, not panic or roll anything.
+func TestRunOnceMissingDeployment(t *testing.T) {
+	app := target("app", "ghost", "library/someapp", "edge")
+	cfg := Config{
+		Registry:      testRegistry,
+		Targets:       []Target{app},
+		Timeout:       5 * time.Second,
+		WebhookHeader: "Authorization",
+		Listen:        ":0",
+	}
+	e := newEngine(cfg, fake.NewClientset(), mapDigest{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	res := e.RunOnce(context.Background())
+	if res[0].Err == nil {
+		t.Fatalf("expected a get error, got %+v", res[0])
+	}
+	if res[0].Rolled {
+		t.Fatalf("nothing should have rolled: %+v", res[0])
+	}
+}
+
+// Serve must reconcile at startup and shut down cleanly when the context is cancelled.
+func TestServePollsAtStartupAndStops(t *testing.T) {
+	app := target("app", "someapp", "library/someapp", "edge")
+	e, kube := newTestEngine(t, []Target{app}, mapDigest{ref("library/someapp", "edge"): "sha256:aaa"})
+	e.cfg.Listen = "127.0.0.1:0"
+	e.cfg.PollInterval = 10 * time.Millisecond
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- e.Serve(ctx) }()
+
+	waitForAnnotation(t, kube, "app", "someapp", "sha256:aaa")
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Serve: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Serve did not return after ctx cancel")
+	}
+}
+
+func waitForAnnotation(t *testing.T, kube *fake.Clientset, namespace, name, want string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if annotationOf(t, kube, namespace, name) == want {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("annotation for %s/%s never became %q", namespace, name, want)
+}
+
+// New builds a real API client from kubeconfig when not in-cluster. A minimal config proves the
+// wiring without a cluster.
+func TestNewBuildsAClient(t *testing.T) {
+	kubeconfig := filepath.Join(t.TempDir(), "config")
+	const cfgYAML = `apiVersion: v1
+kind: Config
+clusters:
+  - name: c
+    cluster:
+      server: https://127.0.0.1:6443
+contexts:
+  - name: x
+    context:
+      cluster: c
+      user: u
+current-context: x
+users:
+  - name: u
+    user: {}
+`
+	if err := os.WriteFile(kubeconfig, []byte(cfgYAML), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("KUBECONFIG", kubeconfig)
+
+	cfg := Config{
+		Registry:      testRegistry,
+		Targets:       []Target{target("app", "someapp", "library/someapp", "edge")},
+		Timeout:       time.Second,
+		WebhookHeader: "Authorization",
+		Listen:        ":0",
+		PollInterval:  time.Minute,
+	}
+	e, err := New(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if e == nil {
+		t.Fatal("New returned a nil engine")
+	}
+}
+
+func TestConfigFromEnvOverrides(t *testing.T) {
+	t.Setenv("SIGHUP_REGISTRY", testRegistry)
+	t.Setenv("SIGHUP_TARGETS", `[{"repository":"library/someapp","tag":"edge","namespace":"app","deployment":"someapp"}]`)
+	t.Setenv("SIGHUP_LISTEN", ":9999")
+	t.Setenv("SIGHUP_POLL_INTERVAL", "5m")
+	t.Setenv("SIGHUP_TIMEOUT", "10s")
+	t.Setenv("SIGHUP_WEBHOOK_HEADER", "X-Hook")
+
+	cfg, err := ConfigFromEnv()
+	if err != nil {
+		t.Fatalf("ConfigFromEnv: %v", err)
+	}
+	if cfg.Listen != ":9999" || cfg.PollInterval != 5*time.Minute || cfg.Timeout != 10*time.Second || cfg.WebhookHeader != "X-Hook" {
+		t.Fatalf("unexpected cfg: %+v", cfg)
+	}
+
+	t.Setenv("SIGHUP_POLL_INTERVAL", "not-a-duration")
+	if _, err := ConfigFromEnv(); err == nil {
+		t.Fatal("expected an error for a bad SIGHUP_POLL_INTERVAL")
+	}
+	t.Setenv("SIGHUP_POLL_INTERVAL", "5m")
+
+	t.Setenv("SIGHUP_TIMEOUT", "not-a-duration")
+	if _, err := ConfigFromEnv(); err == nil {
+		t.Fatal("expected an error for a bad SIGHUP_TIMEOUT")
 	}
 }

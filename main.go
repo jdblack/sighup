@@ -39,9 +39,9 @@ func run() error {
 	}
 	_ = fs.Parse(os.Args[1:])
 
-	mode := "serve"
-	if fs.NArg() > 0 {
-		mode = fs.Arg(0)
+	mode, err := resolveMode(fs.Args())
+	if err != nil {
+		return err
 	}
 
 	level := slog.LevelInfo
@@ -63,13 +63,23 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	switch mode {
-	case "cronjob":
+	if mode == "cronjob" {
 		return runOnce(ctx, engine, log)
-	case "serve":
-		return engine.Serve(ctx)
+	}
+	return engine.Serve(ctx)
+}
+
+// resolveMode reads the mode from the positional argument: `serve` (the default, resident) or
+// `cronjob` (scheduled). Anything else is an error, so a typo fails loudly instead of silently
+// starting a resident server.
+func resolveMode(args []string) (string, error) {
+	switch {
+	case len(args) == 0:
+		return "serve", nil
+	case args[0] == "serve" || args[0] == "cronjob":
+		return args[0], nil
 	default:
-		return fmt.Errorf("unknown mode %q: want serve or cronjob", mode)
+		return "", fmt.Errorf("unknown mode %q: want serve or cronjob", args[0])
 	}
 }
 
