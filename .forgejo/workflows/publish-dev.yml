@@ -20,7 +20,6 @@ on:
 env:
   REGISTRY: harbor.vn.linuxguru.net
   IMAGE: harbor.vn.linuxguru.net/library/sighup
-  GO_IMAGE: golang:1.27
 
 jobs:
   publish:
@@ -37,12 +36,9 @@ jobs:
           # The robot name contains a `$` (robot$library+forgejo); quoted, so the shell leaves it be.
           echo "$HARBOR_TOKEN" | docker login "$REGISTRY" -u "$HARBOR_USER" --password-stdin
 
-      # The job container carries no Go toolchain, so tests run in the official image through the
-      # DinD daemon -- the same daemon the image build uses below.
-      - name: Test
-        run: |
-          set -eu
-          docker run --rm -v "$PWD":/src -w /src "$GO_IMAGE" go test ./...
+      # No test step: the tests run inside the image build (see the Dockerfile's `test` stage), where
+      # the source is actually present. A CI step cannot mount the job's working directory into a
+      # sibling container on the DinD daemon, and the job image has no Go toolchain.
 
       - name: Build and push
         run: |

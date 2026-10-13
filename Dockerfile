@@ -1,7 +1,12 @@
 # syntax=docker/dockerfile:1
 
-# ---------- build ----------
-FROM golang:1.27 AS build
+# ---------- test ----------
+# The tests run here, not in a CI step. The runner executes jobs in a container on the DinD daemon,
+# and a step cannot bind-mount the job's working directory into a sibling container -- `docker run
+# -v "$PWD":/src` resolves $PWD on the *daemon's* filesystem (the pod), which is empty, so the test
+# command dies instantly. The job image also carries no Go toolchain. Building the image therefore
+# proves the tests pass.
+FROM golang:1.27 AS test
 
 WORKDIR /src
 
@@ -10,6 +15,11 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
+
+RUN go test ./...
+
+# ---------- build ----------
+FROM test AS build
 
 # CGO off for a static binary; -trimpath and -s -w keep the artifact small.
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/sighup .
