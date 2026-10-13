@@ -47,9 +47,11 @@ jobs:
           platforms: linux/amd64
           push: true
           # sha-<short> first: the immutable handle, so it exists before the moving tag.
+          # `latest`, not `edge`: main is the release branch, while `edge` is the dev convention
+          # (Harbor's dev builds). One tag meaning two builds would be a trap.
           tags: |
             ${{ env.IMAGE }}:sha-${{ steps.sha.outputs.short }}
-            ${{ env.IMAGE }}:edge
+            ${{ env.IMAGE }}:latest
 
       - name: Set up Helm
         uses: azure/setup-helm@v4
