@@ -56,6 +56,14 @@ jobs:
       - name: Set up Helm
         uses: azure/setup-helm@v4
 
+      # The chart has no Go tests; lint plus a render assertion per shape (Deployment vs CronJob) is
+      # what stands between a template typo and a bad `helm push`.
+      - name: Lint and test the chart
+        run: |
+          make chart-lint
+          make chart-guard
+          make chart-test
+
       # The chart at the version Chart.yaml declares. `main` is the release branch, so a chart change
       # means a Chart.yaml bump before merge -- Helm OCI refuses to overwrite an existing version.
       - name: Package and push chart to ghcr
